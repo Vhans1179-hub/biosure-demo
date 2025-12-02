@@ -20,16 +20,16 @@ def generate_data():
         {'code': 'J9359', 'desc': 'Glofitamab (Columvi)', 'type': 'Rescue'},
         {'code': 'Z51.5', 'desc': 'Hospice', 'type': 'Failure'}
     ]
-    
+
     # --- B. PHARMA INTERNAL DATA ---
     pharma_data = []
-    
+
     for i in range(100):
         patient_id = f"PT-{10000+i}"
         start_date = datetime(2023, 6, 1) + timedelta(days=random.randint(0, 365))
         revenue = 420000
-        initial_reserve = revenue * 0.40 
-        
+        initial_reserve = revenue * 0.40
+
         pharma_data.append({
             "Patient_ID": patient_id,
             "Shipment_Date": start_date.strftime("%Y-%m-%d"),
@@ -68,7 +68,7 @@ generate_data()
 # ==========================================
 print("2. Writing App Code...")
 
-app_code = r"""
+app_code = r'''
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -101,10 +101,10 @@ def analyze_portfolio(pharma_df, claims_df):
     merged = pd.merge(pharma_df, claims_df, on="Patient_ID", how="left", suffixes=('_Int', '_Ext'))
     merged['BioSure_Status'] = 'Active'
     merged['Cash_Impact'] = 0.0
-    
+
     patient_groups = merged.groupby('Patient_ID')
     results = []
-    
+
     for pid, group in patient_groups:
         info = group.iloc[0]
         ship_date = info['Shipment_Date']
@@ -114,7 +114,7 @@ def analyze_portfolio(pharma_df, claims_df):
         failures = group[group['Code'].isin(rescue_codes)]
         current_date = datetime(2024, 10, 1)
         days_since = (current_date - ship_date).days
-        
+
         record = {'Patient_ID': pid, 'Days_On_Therapy': days_since, 'Current_Reserve': reserve, 'Status': 'Monitoring', 'Cash_Impact': 0.0}
 
         if not failures.empty:
@@ -130,7 +130,7 @@ def analyze_portfolio(pharma_df, claims_df):
             elif days_since > 90:
                 record['Status'] = 'Low Risk (Partial Release)'
                 record['Cash_Impact'] = reserve * 0.5
-        
+
         results.append(record)
     return pd.DataFrame(results)
 
@@ -146,7 +146,7 @@ def simulate_forecast_evolution():
 
 def main():
     st.sidebar.title("🧬 BioSure")
-    
+
     if os.path.exists("biosure_pharma.csv"):
         pharma_df = pd.read_csv("biosure_pharma.csv")
         claims_df = pd.read_csv("biosure_claims.csv")
@@ -160,7 +160,7 @@ def main():
     with tab1:
         st.title("Net Asset Value (NAV) Adjuster")
         ledger = analyze_portfolio(pharma_df, claims_df)
-        
+
         cash_unlock = ledger[ledger['Cash_Impact'] > 0]['Cash_Impact'].sum()
         new_liability = ledger[ledger['Cash_Impact'] < 0]['Cash_Impact'].sum()
         net_benefit = cash_unlock + new_liability
@@ -169,7 +169,7 @@ def main():
         with m1: st.markdown(f'<div class="metric-card"><div class="metric-title">Total Reserves</div><div class="metric-value">${ledger["Current_Reserve"].sum()/1000000:.1f}M</div></div>', unsafe_allow_html=True)
         with m2: st.markdown(f'<div class="metric-card cash-release"><div class="metric-title">Cash Unlock</div><div class="metric-value">+${cash_unlock/1000000:.1f}M</div></div>', unsafe_allow_html=True)
         with m3: st.markdown(f'<div class="metric-card liability-hit"><div class="metric-title">New Liability</div><div class="metric-value">-${abs(new_liability)/1000000:.1f}M</div></div>', unsafe_allow_html=True)
-        with m4: 
+        with m4:
             color = "#a3e635" if net_benefit > 0 else "#ef4444"
             st.markdown(f'<div class="metric-card" style="border-left-color: {color};"><div class="metric-title">Net Benefit</div><div class="metric-value">${net_benefit/1000000:.1f}M</div></div>', unsafe_allow_html=True)
 
@@ -181,20 +181,20 @@ def main():
     with tab2:
         st.title("Forecast Precision Evolution")
         st.markdown("**The BioSure Effect:** Moving from conservative guesses to precision reserves.")
-        
+
         sim_data = simulate_forecast_evolution()
-        
+
         base = alt.Chart(sim_data).encode(x=alt.X('Quarter', sort=None))
 
         area = base.mark_area(opacity=0.3, color='#3b82f6').encode(
             y='Lower_Bound',
             y2='Upper_Bound'
         )
-        
+
         line = base.mark_line(color='#a3e635', strokeWidth=4).encode(
             y='Reserve_Rate'
         )
-        
+
         points = base.mark_circle(size=100, color='white').encode(
             y='Reserve_Rate',
             tooltip=['Quarter', 'Reserve_Rate', 'Type']
@@ -202,7 +202,7 @@ def main():
 
         chart = (area + line + points).properties(height=400)
         st.altair_chart(chart, use_container_width=True)
-        
+
         col_a, col_b = st.columns([1,1])
         with col_a:
             st.info("### Q1: The Manual Guess\\nCFO books **40%** reserve to be safe. \\n**Result:** Millions in trapped capital.")
@@ -211,7 +211,7 @@ def main():
 
 if __name__ == "__main__":
     main()
-"""
+'''
 
 with open("biosure_app.py", "w") as f:
     f.write(app_code)
