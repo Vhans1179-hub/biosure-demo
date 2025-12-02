@@ -2,22 +2,83 @@ import os
 import subprocess
 import sys
 import time
-import urllib.request
+import pandas as pd
+import numpy as np
+import random
+from datetime import datetime, timedelta
 
-# --- PART 1: THE APP CODE (Embedded) ---
-# This saves the Streamlit app to a file on the Colab machine
-app_code = """
+# ==========================================
+# PART 1: GENERATE SYNTHETIC DATA
+# ==========================================
+print("1. Generating Synthetic Data...")
+
+def generate_data():
+    # --- A. CLAIMS DATA ---
+    claims_data = []
+    cart_drugs = [{'code': 'Q2041', 'desc': 'Yescarta', 'cost': 420000}]
+    rescue_events = [
+        {'code': 'J9359', 'desc': 'Glofitamab (Columvi)', 'type': 'Rescue'},
+        {'code': 'Z51.5', 'desc': 'Hospice', 'type': 'Failure'}
+    ]
+    
+    # --- B. PHARMA INTERNAL DATA ---
+    pharma_data = []
+    
+    for i in range(100):
+        patient_id = f"PT-{10000+i}"
+        start_date = datetime(2023, 6, 1) + timedelta(days=random.randint(0, 365))
+        revenue = 420000
+        initial_reserve = revenue * 0.40 
+        
+        pharma_data.append({
+            "Patient_ID": patient_id,
+            "Shipment_Date": start_date.strftime("%Y-%m-%d"),
+            "Payer": "Commercial Plan",
+            "Revenue_Booked": revenue,
+            "Current_Reserve_Held": initial_reserve,
+            "Contract_Terms": "100% Rebate if Fail < 6mo"
+        })
+
+        claims_data.append({
+            "Patient_ID": patient_id,
+            "Date": start_date.strftime("%Y-%m-%d"),
+            "Code": "Q2041",
+            "Description": "CAR-T Infusion"
+        })
+
+        if random.random() < 0.30:
+            fail_days = random.randint(30, 200)
+            fail_date = start_date + timedelta(days=fail_days)
+            rescue = random.choice(rescue_events)
+            claims_data.append({
+                "Patient_ID": patient_id,
+                "Date": fail_date.strftime("%Y-%m-%d"),
+                "Code": rescue['code'],
+                "Description": rescue['desc']
+            })
+
+    pd.DataFrame(claims_data).to_csv("biosure_claims.csv", index=False)
+    pd.DataFrame(pharma_data).to_csv("biosure_pharma.csv", index=False)
+    print("✅ Data Generated.")
+
+generate_data()
+
+# ==========================================
+# PART 2: DASHBOARD CODE
+# ==========================================
+print("2. Writing App Code...")
+
+app_code = r"""
 import streamlit as st
 import pandas as pd
 import numpy as np
 import altair as alt
-from datetime import datetime, timedelta
+import os  # <--- FIXED: Added missing import
+from datetime import datetime
 
-# Page Config
 st.set_page_config(page_title="BioSure | Liability Forecaster", layout="wide", page_icon="🧬")
 
-# CSS Styling
-st.markdown(\"\"\"
+st.markdown("""
 <style>
     .metric-card {
         background-color: #1e293b;
@@ -26,174 +87,159 @@ st.markdown(\"\"\"
         border-left: 5px solid #a3e635;
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
-    .metric-title {
-        color: #94a3b8;
-        font-size: 14px;
-        font-weight: 500;
-    }
-    .metric-value {
-        color: #ffffff;
-        font-size: 28px;
-        font-weight: 700;
-    }
+    .metric-title { color: #94a3b8; font-size: 14px; font-weight: 500; }
+    .metric-value { color: #ffffff; font-size: 28px; font-weight: 700; }
+    .cash-release { border-left-color: #a3e635 !important; }
+    .liability-hit { border-left-color: #ef4444 !important; }
 </style>
-\"\"\", unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
-# Mock Data Generator
-def generate_mock_data(n_patients=50):
-    patients = []
-    rescue_drugs = ['Glofitamab', 'Epcoritamab', 'Talquetamab', 'Stem Cell Transplant', 'Hospice']
+# --- LOGIC: CASH RELEASE ---
+def analyze_portfolio(pharma_df, claims_df):
+    pharma_df['Shipment_Date'] = pd.to_datetime(pharma_df['Shipment_Date'])
+    claims_df['Date'] = pd.to_datetime(claims_df['Date'])
+    merged = pd.merge(pharma_df, claims_df, on="Patient_ID", how="left", suffixes=('_Int', '_Ext'))
+    merged['BioSure_Status'] = 'Active'
+    merged['Cash_Impact'] = 0.0
     
-    for i in range(n_patients):
-        pid = f"PT-{1000+i}"
-        infusion_date = datetime(2024, 1, 1) + timedelta(days=np.random.randint(0, 180))
+    patient_groups = merged.groupby('Patient_ID')
+    results = []
+    
+    for pid, group in patient_groups:
+        info = group.iloc[0]
+        ship_date = info['Shipment_Date']
+        reserve = info['Current_Reserve_Held']
+        booked = info['Revenue_Booked']
+        rescue_codes = ['J9359', 'Z51.5']
+        failures = group[group['Code'].isin(rescue_codes)]
+        current_date = datetime(2024, 10, 1)
+        days_since = (current_date - ship_date).days
         
-        # Simulate 30% Failure Rate
-        if np.random.random() < 0.30:
-            status = "Failure Detected"
-            days_to_fail = np.random.randint(30, 200)
-            event_date = infusion_date + timedelta(days=days_to_fail)
-            trigger = np.random.choice(rescue_drugs)
+        record = {'Patient_ID': pid, 'Days_On_Therapy': days_since, 'Current_Reserve': reserve, 'Status': 'Monitoring', 'Cash_Impact': 0.0}
+
+        if not failures.empty:
+            fail_date = failures.iloc[0]['Date']
+            days_to_fail = (fail_date - ship_date).days
+            rebate_owed = booked if days_to_fail < 180 else 0
+            record['Status'] = 'Failure Confirmed'
+            record['Cash_Impact'] = -(rebate_owed - reserve)
         else:
-            status = "Active / Remission"
-            days_to_fail = None
-            event_date = datetime.now()
-            trigger = None
-            
-        patients.append({
-            "Patient ID": pid,
-            "Infusion Date": infusion_date,
-            "Last Signal Date": event_date,
-            "Status": status,
-            "Failure Trigger": trigger,
-            "Days Post Infusion": (event_date - infusion_date).days if status == "Failure Detected" else (datetime.now() - infusion_date).days
-        })
-    return pd.DataFrame(patients)
+            if days_since > 180:
+                record['Status'] = 'Safe (Risk Expired)'
+                record['Cash_Impact'] = reserve
+            elif days_since > 90:
+                record['Status'] = 'Low Risk (Partial Release)'
+                record['Cash_Impact'] = reserve * 0.5
+        
+        results.append(record)
+    return pd.DataFrame(results)
 
-# Logic Engine
-def calculate_liability(df):
-    liabilities = []
-    for index, row in df.iterrows():
-        liability = 0
-        if row["Status"] == "Failure Detected":
-            days = row["Days Post Infusion"]
-            # Contract Terms
-            if days <= 90:
-                liability = 400000
-            elif days <= 180:
-                liability = 300000
-            elif days <= 365:
-                liability = 200000
-        liabilities.append(liability)
-    df["projected_rebate"] = liabilities
-    return df
+# --- LOGIC: RISK SIMULATION ---
+def simulate_forecast_evolution():
+    data = [
+        {"Quarter": "Q1 (Launch)", "Reserve_Rate": 0.40, "Lower_Bound": 0.25, "Upper_Bound": 0.55, "Type": "Manual Guess"},
+        {"Quarter": "Q2 (BioSure)", "Reserve_Rate": 0.36, "Lower_Bound": 0.30, "Upper_Bound": 0.42, "Type": "AI Calibrated"},
+        {"Quarter": "Q3 (BioSure)", "Reserve_Rate": 0.34, "Lower_Bound": 0.31, "Upper_Bound": 0.37, "Type": "AI Calibrated"},
+        {"Quarter": "Q4 (Actuals)", "Reserve_Rate": 0.32, "Lower_Bound": 0.31, "Upper_Bound": 0.33, "Type": "True Reality"}
+    ]
+    return pd.DataFrame(data)
 
-# Main UI
 def main():
     st.sidebar.title("🧬 BioSure")
-    st.sidebar.markdown("### Financial Clearinghouse")
-    contract_select = st.sidebar.selectbox("Select Therapy Contract", ["Yescarta (Gilead)", "Kymriah (Novartis)", "Carvykti (Janssen)"])
-    st.sidebar.divider()
-    st.sidebar.info(f"Monitoring **{contract_select}** Outcome-Based Contract (OBC).")
-
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.title("Liability Forecast Dashboard")
-        st.markdown(f"**Entity:** Global Pharma Corp | **Product:** {contract_select}")
-    with col2:
-        if st.button("🔄 Ingest Latest Claims"):
-            st.toast("Connecting to ConcertAI... Data Refreshed!", icon="✅")
-
-    raw_data = generate_mock_data(100)
-    processed_data = calculate_liability(raw_data)
     
-    total_revenue = len(processed_data) * 400000 
-    total_liability = processed_data["projected_rebate"].sum()
-    net_revenue = total_revenue - total_liability
-    fail_count = len(processed_data[processed_data["Status"] == "Failure Detected"])
-    
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
-        st.markdown(f'<div class="metric-card"><div class="metric-title">Total Contract Revenue</div><div class="metric-value">${total_revenue/1000000:.1f}M</div></div>', unsafe_allow_html=True)
-    with m2:
-        st.markdown(f'<div class="metric-card" style="border-left-color: #ef4444;"><div class="metric-title">Projected Liability</div><div class="metric-value">${total_liability/1000000:.2f}M</div></div>', unsafe_allow_html=True)
-    with m3:
-        st.markdown(f'<div class="metric-card" style="border-left-color: #3b82f6;"><div class="metric-title">Net Revenue</div><div class="metric-value">${net_revenue/1000000:.1f}M</div></div>', unsafe_allow_html=True)
-    with m4:
-        st.markdown(f'<div class="metric-card" style="border-left-color: #f59e0b;"><div class="metric-title">Failure Signals</div><div class="metric-value">{fail_count}</div></div>', unsafe_allow_html=True)
+    if os.path.exists("biosure_pharma.csv"):
+        pharma_df = pd.read_csv("biosure_pharma.csv")
+        claims_df = pd.read_csv("biosure_claims.csv")
+    else:
+        st.error("Data missing.")
+        st.stop()
 
-    st.markdown("---")
-    
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        st.subheader("Liability by Trigger Event")
-        failures = processed_data[processed_data["projected_rebate"] > 0]
-        chart = alt.Chart(failures).mark_bar().encode(
-            x=alt.X('Failure Trigger', sort='-y'),
-            y='sum(projected_rebate)',
-            color=alt.Color('Failure Trigger', scale=alt.Scale(scheme='reds'))
-        ).properties(height=300)
+    tab1, tab2 = st.tabs(["💰 Cash Release (Current)", "📉 Risk Reduction (Future)"])
+
+    # --- TAB 1: CURRENT STATE ---
+    with tab1:
+        st.title("Net Asset Value (NAV) Adjuster")
+        ledger = analyze_portfolio(pharma_df, claims_df)
+        
+        cash_unlock = ledger[ledger['Cash_Impact'] > 0]['Cash_Impact'].sum()
+        new_liability = ledger[ledger['Cash_Impact'] < 0]['Cash_Impact'].sum()
+        net_benefit = cash_unlock + new_liability
+
+        m1, m2, m3, m4 = st.columns(4)
+        with m1: st.markdown(f'<div class="metric-card"><div class="metric-title">Total Reserves</div><div class="metric-value">${ledger["Current_Reserve"].sum()/1000000:.1f}M</div></div>', unsafe_allow_html=True)
+        with m2: st.markdown(f'<div class="metric-card cash-release"><div class="metric-title">Cash Unlock</div><div class="metric-value">+${cash_unlock/1000000:.1f}M</div></div>', unsafe_allow_html=True)
+        with m3: st.markdown(f'<div class="metric-card liability-hit"><div class="metric-title">New Liability</div><div class="metric-value">-${abs(new_liability)/1000000:.1f}M</div></div>', unsafe_allow_html=True)
+        with m4: 
+            color = "#a3e635" if net_benefit > 0 else "#ef4444"
+            st.markdown(f'<div class="metric-card" style="border-left-color: {color};"><div class="metric-title">Net Benefit</div><div class="metric-value">${net_benefit/1000000:.1f}M</div></div>', unsafe_allow_html=True)
+
+        st.markdown("---")
+        st.subheader("Adjusted Ledger")
+        st.dataframe(ledger.sort_values('Cash_Impact', ascending=False), use_container_width=True)
+
+    # --- TAB 2: FUTURE STATE ---
+    with tab2:
+        st.title("Forecast Precision Evolution")
+        st.markdown("**The BioSure Effect:** Moving from conservative guesses to precision reserves.")
+        
+        sim_data = simulate_forecast_evolution()
+        
+        base = alt.Chart(sim_data).encode(x=alt.X('Quarter', sort=None))
+
+        area = base.mark_area(opacity=0.3, color='#3b82f6').encode(
+            y='Lower_Bound',
+            y2='Upper_Bound'
+        )
+        
+        line = base.mark_line(color='#a3e635', strokeWidth=4).encode(
+            y='Reserve_Rate'
+        )
+        
+        points = base.mark_circle(size=100, color='white').encode(
+            y='Reserve_Rate',
+            tooltip=['Quarter', 'Reserve_Rate', 'Type']
+        )
+
+        chart = (area + line + points).properties(height=400)
         st.altair_chart(chart, use_container_width=True)
         
-    with c2:
-        st.subheader("Status Distribution")
-        pie = alt.Chart(processed_data).mark_arc(innerRadius=50).encode(
-            theta=alt.Theta("count()", stack=True),
-            color=alt.Color("Status", scale=alt.Scale(domain=['Active / Remission', 'Failure Detected'], range=['#a3e635', '#ef4444']))
-        )
-        st.altair_chart(pie, use_container_width=True)
-
-    st.subheader("Adjudication Ledger (Live Stream)")
-    display_df = processed_data.copy()
-    display_df["Revenue Impact"] = display_df["projected_rebate"].apply(lambda x: f"-${x:,.0f}" if x > 0 else "$0")
-    display_df["Infusion Date"] = display_df["Infusion Date"].dt.date
-    st.dataframe(display_df[["Patient ID", "Infusion Date", "Status", "Failure Trigger", "Days Post Infusion", "Revenue Impact"]].sort_values(by="Revenue Impact", ascending=True), use_container_width=True, hide_index=True)
+        col_a, col_b = st.columns([1,1])
+        with col_a:
+            st.info("### Q1: The Manual Guess\\nCFO books **40%** reserve to be safe. \\n**Result:** Millions in trapped capital.")
+        with col_b:
+            st.success("### Q4: The BioSure Reality\\nAI proves actual failure rate is **32%**. \\n**Result:** Permanent release of 8% revenue margin.")
 
 if __name__ == "__main__":
     main()
 """
 
-# --- PART 2: CLOUDFLARE LAUNCHER ---
-
-print("1. Saving Application Code...")
 with open("biosure_app.py", "w") as f:
     f.write(app_code)
 
-print("2. Installing Dependencies (Streamlit, Altair)...")
-# We use subprocess to run pip install quietly
+# ==========================================
+# PART 3: LAUNCH
+# ==========================================
+print("3. Launching...")
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "streamlit", "altair", "pandas", "numpy"])
 
-print("3. Installing Cloudflare Tunnel...")
-# Download cloudflared if not present
 if not os.path.exists("cloudflared-linux-amd64"):
     subprocess.run(["wget", "-q", "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"], check=True)
     subprocess.run(["chmod", "+x", "cloudflared-linux-amd64"], check=True)
 
-print("4. Starting Dashboard Server...")
-# Start Streamlit in the background on port 8501
 subprocess.Popen(["streamlit", "run", "biosure_app.py", "--server.headless", "true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-print("5. Establishing Tunnel...")
-# Start Cloudflare tunnel pointing to localhost:8501
-time.sleep(3) # Wait for Streamlit to spin up
+time.sleep(3)
 tunnel_cmd = "./cloudflared-linux-amd64 tunnel --url http://localhost:8501"
 tunnel_process = subprocess.Popen(tunnel_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-print("\n" + "="*60)
-print("  SEARCHING FOR LINK (Please wait 10-15 seconds)...")
-print("="*60 + "\n")
-
-# Read the tunnel output to find the unique URL
+print("Searching for link...")
 try:
     for line in iter(tunnel_process.stderr.readline, ''):
         if "trycloudflare.com" in line:
             import re
             url_match = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', line)
             if url_match:
-                url = url_match.group(0)
-                print(f"✅ SUCCESS! Click to view your Dashboard: {url}")
-                print("\n(Keep this cell running to keep the app online)")
+                print(f"✅ DASHBOARD READY! Click: {url_match.group(0)}")
                 break
 except KeyboardInterrupt:
-    print("Stopping...")
     tunnel_process.kill()
